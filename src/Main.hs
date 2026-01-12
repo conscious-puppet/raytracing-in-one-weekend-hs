@@ -10,6 +10,7 @@ import Effectful.FileSystem.IO qualified as E
 import Effectful.State.Static.Local qualified as E
 import Effectful.TH qualified as E
 import GHC.Float (double2Int, int2Double)
+import ListT qualified
 
 newtype ImageWidth = ImageWidth Int
 newtype ImageHeight = ImageHeight Int
@@ -47,13 +48,35 @@ runImage = E.reinterpret (E.evalState (Nothing :: Maybe Handle)) $ const $ \case
     imageHandle <- E.get `whenNothingM` (E.throwError . ImageHandleErr $ "No image opened. Use `openImage` first.")
     liftIO $ T.hPutStrLn imageHandle $ show r <> " " <> show g <> " " <> show b
 
-type App = Eff '[Image, E.FileSystem, E.Error ImageHandleErr, IOE]
+data Logger :: E.Effect where
+  Log :: Text -> Logger m ()
+  LogLn :: Text -> Logger m ()
+
+E.makeEffect ''Logger
+
+runLogger ::
+  (IOE :> es) =>
+  Eff (Logger : es) a ->
+  Eff es a
+runLogger = E.interpret $ const $ \case
+  Log content -> liftIO $ putText content
+  LogLn content -> liftIO $ putTextLn content
+
+type App =
+  Eff
+    '[ Image
+     , Logger
+     , E.FileSystem
+     , E.Error ImageHandleErr
+     , IOE
+     ]
 
 appRunner :: App a -> IO (Either ImageHandleErr a)
 appRunner =
   E.runEff
     . E.runErrorNoCallStack
     . E.runFileSystem
+    . runLogger
     . runImage
 
 imageWidth :: ImageWidth
@@ -69,18 +92,21 @@ main = do
     Left (ImageHandleErr err) -> putTextLn $ "Error: " <> err
     Right _ -> pass
 
-createImage :: (Image :> es) => Eff es ()
+createImage :: (Logger :> es, Image :> es) => Eff es ()
 createImage = E.bracket_ (openImage "image.ppm") closeImage $ do
-  initImage imageWidth imageHeight
-  mapM_ putPixelLn imagePixels
+  initImage imageWidth imageHeight >> printImagePixels
 
-imagePixels :: [ImagePixel]
-imagePixels = do
+printImagePixels :: (Image :> es, Logger :> es) => Eff es ()
+printImagePixels = withLog $ do
   let ImageHeight imageHeight' = imageHeight
       ImageWidth imageWidth' = imageWidth
-  j <- [0 .. imageHeight' - 1]
-  i <- [0 .. imageWidth' - 1]
+  j <- ListT.fromFoldable [0 .. imageHeight' - 1]
+  lift . log $ "\rScanlines remaining: " <> show (imageHeight' - j) <> " "
+  i <- ListT.fromFoldable [0 .. imageWidth' - 1]
   let !r = double2Int (255.999 * (int2Double i / int2Double (imageWidth' - 1)))
       !g = double2Int (255.999 * (int2Double j / int2Double (imageHeight' - 1)))
       !b = double2Int (255.999 * 0.0)
-  pure $ ImagePixel (ColorR r, ColorG g, ColorB b)
+  lift . putPixelLn $ ImagePixel (ColorR r, ColorG g, ColorB b)
+  where
+    withLog :: (Logger :> es) => ListT.ListT (Eff es) () -> Eff es ()
+    withLog listT = E.finally (void $ ListT.toList listT) (logLn "\rDone.                 ")
