@@ -44,6 +44,7 @@ common shared
     NoStarIsType
     OverloadedRecordDot
     OverloadedStrings
+    RecordWildCards
     StrictData
     TemplateHaskell
     TypeFamilies

@@ -114,30 +114,61 @@ data Ray = Ray {origin :: Point3, direction :: Vec3}
 at :: Ray -> Double -> Point3
 at ray t = ray.origin + coerce (ray.direction `scale` t)
 
-rayColor :: Ray -> Color
-rayColor ray =
+rayColor :: Ray -> [Shape AnyShapeTag] -> Color
+rayColor ray world' =
   let unitDirection = unitVector ray.direction
       a = 0.5 * (yVal unitDirection + 1.0)
-      center = Point3 (0.0, 0.0, -1.0)
-      radius = 0.5
-      t = hitSphere center radius ray
-      n = unitVector $ ray `at` t - Point3 (0.0, 0.0, -1.0)
-  in if t > 0.0 then
-       Color (xVal n + 1, yVal n + 1, zVal n + 1) `scale` 0.5
-     else
-       Color (1.0, 1.0, 1.0) `scale` (1.0 - a) + Color (0.5, 0.7, 1.0) `scale` a
+  in case hit ray (0.0, 1.0 / 0.0) world' of
+       Just rec -> (coerce rec.normal + Color (1.0, 1.0, 1.0)) `scale` 0.5
+       Nothing -> Color (1.0, 1.0, 1.0) `scale` (1.0 - a) + Color (0.5, 0.7, 1.0) `scale` a
 
-hitSphere :: Point3 -> Double -> Ray -> Double
-hitSphere center radius ray =
-  let oc = center - ray.origin
-      a = lengthSquared ray.direction
-      h = ray.direction `dot` coerce oc
-      c = lengthSquared oc - radius * radius
-      discriminant = h * h - a * c
-  in if discriminant < 0.0 then
-       -1.0
-     else
-       (h - sqrt discriminant) / a
+data HitRecord = HitRecord
+  { p :: Point3
+  , normal :: Vec3
+  , t :: Double
+  , frontFace :: Bool
+  }
+
+data SphereTag
+data AnyShapeTag
+
+data Shape s where
+  Sphere :: {center :: Point3, radius :: Double} -> Shape SphereTag
+  AnyShape :: Hittable (Shape s) => Shape s -> Shape AnyShapeTag
+
+class Hittable h where
+  hit :: Ray -> (Double, Double) -> h -> Maybe HitRecord
+
+instance Hittable (Shape SphereTag) where
+  hit ray (rayTMin, rayTMax) sphere =
+    let oc = sphere.center - ray.origin
+        a = lengthSquared ray.direction
+        h = ray.direction `dot` coerce oc
+        c = lengthSquared oc - sphere.radius ^ (2 :: Int)
+        discriminant = h ^ (2 :: Int) - a * c
+        sqrtd = sqrt discriminant
+        root_lo = (h - sqrtd) / a
+        root_hi = (h + sqrtd) / a
+        root = if root_lo <= rayTMin || rayTMax <= root_lo then root_hi else root_lo
+        t = root
+        p = ray `at` t
+        outwardNormal = coerce (p - sphere.center) `scale` (1 / sphere.radius)
+        (normal, frontFace) =
+          if ray.direction `dot` outwardNormal > 0.0 then (-outwardNormal, False) else (outwardNormal, True)
+    in if
+         | discriminant < 0.0 -> Nothing
+         | (root <= rayTMin || rayTMax <= root) -> Nothing
+         | otherwise -> Just $ HitRecord{..}
+
+instance Hittable (Shape AnyShapeTag) where
+  hit ray tInterval (AnyShape shape) = hit ray tInterval shape
+
+instance Hittable a => Hittable [a] where
+  hit _ _ [] = Nothing
+  hit ray (rayTMin, rayTMax) (h : hs) =
+    case hit ray (rayTMin, rayTMax) h of
+      Nothing -> hit ray (rayTMin, rayTMax) hs
+      Just !closestSoFar -> hit ray (rayTMin, closestSoFar.t) hs <|> Just closestSoFar
 
 type App =
   Eff
@@ -205,6 +236,12 @@ viewportUpperLeft =
 pixel00Loc :: Point3
 pixel00Loc = viewportUpperLeft + coerce (pixelDeltaU + pixelDeltaV) `scale` 0.5
 
+world :: [Shape AnyShapeTag]
+world =
+  [ AnyShape $ Sphere (Point3 (0, 0, -1)) 0.5
+  , AnyShape $ Sphere (Point3 (0, -100.5, -1)) 100
+  ]
+
 main :: IO ()
 main = do
   result <- appRunner createImage
@@ -228,7 +265,7 @@ printImagePixels = withLog $ do
           + coerce (pixelDeltaV `scale` int2Double j)
       rayDirection = coerce $ pixelCenter - cameraCenter
       ray = Ray cameraCenter rayDirection
-      pixelColor = rayColor ray
+      pixelColor = rayColor ray world
   lift . putPixelLn . pixel $ pixelColor
  where
   withLog :: Logger :> es => ListT.ListT (Eff es) () -> Eff es ()
