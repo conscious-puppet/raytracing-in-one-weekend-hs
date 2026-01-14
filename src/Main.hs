@@ -130,14 +130,14 @@ rayColor ray =
 hitSphere :: Point3 -> Double -> Ray -> Double
 hitSphere center radius ray =
   let oc = center - ray.origin
-      a = ray.direction `dot` ray.direction
-      b = (-2.0) * ray.direction `dot` coerce oc
-      c = oc `dot` oc - radius * radius
-      discriminant = b * b - 4 * a * c
+      a = lengthSquared ray.direction
+      h = ray.direction `dot` coerce oc
+      c = lengthSquared oc - radius * radius
+      discriminant = h * h - a * c
   in if discriminant < 0.0 then
        -1.0
      else
-       (-b - sqrt discriminant) / (2.0 * a)
+       (h - sqrt discriminant) / a
 
 type App =
   Eff
