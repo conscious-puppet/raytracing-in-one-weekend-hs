@@ -92,7 +92,7 @@ instance Vector3 Vec3 where
   zVal (Vec3 (_, _, z)) = z
   scale vec k = vec * Vec3 (k, k, k)
   vLength vec = sqrt $ lengthSquared vec
-  lengthSquared vec = dot vec vec
+  lengthSquared vec = vec `dot` vec
   toText (Vec3 (x, y, z)) = show x <> " " <> show y <> " " <> show z
   dot (Vec3 (x1, y1, z1)) (Vec3 (x2, y2, z2)) = x1 * x2 + y1 * y2 + z1 * z2
   cross (Vec3 (x1, y1, z1)) (Vec3 (x2, y2, z2)) = Vec3 (y1 * z2 - y2 * z1, z1 * x2 - z2 * x1, x1 * y2 - y1 * x2)
@@ -122,16 +122,29 @@ newtype Point3 = Point3 (Double, Double, Double)
 
 data Ray = Ray {origin :: Point3, direction :: Vec3}
 
-class ImageRay where
-  at :: Ray -> Double -> Point3
-  rayColor :: Ray -> Color
+at :: Ray -> Double -> Point3
+at ray t = ray.origin + coerce (ray.direction `scale` t)
 
-instance ImageRay where
-  at ray t = ray.origin + coerce (ray.direction `scale` t)
-  rayColor ray =
-    let unitDirection = unitVector ray.direction
-        a = 0.5 * (yVal unitDirection + 1.0)
-    in Color (1.0, 1.0, 1.0) `scale` (1.0 - a) + Color (0.5, 0.7, 1.0) `scale` a
+rayColor :: Ray -> Color
+rayColor ray =
+  let unitDirection = unitVector ray.direction
+      a = 0.5 * (yVal unitDirection + 1.0)
+      center = Point3 (0.0, 0.0, -1.0)
+      radius = 0.5
+      isHittingSphere = hitSphere center radius ray
+  in if isHittingSphere then
+       Color (1.0, 0.0, 0.0)
+     else
+       Color (1.0, 1.0, 1.0) `scale` (1.0 - a) + Color (0.5, 0.7, 1.0) `scale` a
+
+hitSphere :: Point3 -> Double -> Ray -> Bool
+hitSphere center radius ray =
+  let oc = center - ray.origin
+      a = ray.direction `dot` ray.direction
+      b = (-2.0) * ray.direction `dot` coerce oc
+      c = oc `dot` oc - radius * radius
+      discriminant = b * b - 4 * a * c
+  in discriminant >= 0.0
 
 type App =
   Eff
@@ -187,14 +200,14 @@ pixelDeltaU :: Vec3
 pixelDeltaU = viewportU `scale` (1 / int2Double (coerce imageWidth))
 
 pixelDeltaV :: Vec3
-pixelDeltaV = viewportU `scale` (1 / int2Double (coerce imageHeight))
+pixelDeltaV = viewportV `scale` (1 / int2Double (coerce imageHeight))
 
 viewportUpperLeft :: Point3
 viewportUpperLeft =
   cameraCenter
     - Point3 (0.0, 0.0, focalLength)
-    - coerce viewportU `scale` (1 / 2)
-    - coerce viewportV `scale` (1 / 2)
+    - coerce viewportU `scale` 0.5
+    - coerce viewportV `scale` 0.5
 
 pixel00Loc :: Point3
 pixel00Loc = viewportUpperLeft + coerce (pixelDeltaU + pixelDeltaV) `scale` 0.5
