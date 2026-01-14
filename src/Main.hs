@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
-
 module Main (main) where
 
 import Data.Text.IO qualified as T
@@ -21,17 +19,17 @@ newtype ViewportHeight = ViewportHeight Double
 newtype ImagePixel = ImagePixel (Int, Int, Int)
 newtype ImageHandleErr = ImageHandleErr Text deriving stock (Show)
 
-data Image :: E.Effect where
-  OpenImage :: FilePath -> Image m ()
-  CloseImage :: Image m ()
-  InitImage :: ImageWidth -> ImageHeight -> Image m ()
-  PutPixelLn :: ImagePixel -> Image m ()
+data ImageHandle :: E.Effect where
+  OpenImage :: FilePath -> ImageHandle m ()
+  CloseImage :: ImageHandle m ()
+  InitImage :: ImageWidth -> ImageHeight -> ImageHandle m ()
+  PutPixelLn :: ImagePixel -> ImageHandle m ()
 
-E.makeEffect ''Image
+E.makeEffect ''ImageHandle
 
 runImage
   :: (E.Error ImageHandleErr :> es, E.FileSystem :> es, IOE :> es)
-  => Eff (Image : es) a
+  => Eff (ImageHandle : es) a
   -> Eff es a
 runImage = E.reinterpret (E.evalState (Nothing :: Maybe Handle)) $ const $ \case
   OpenImage filePath -> do
@@ -101,21 +99,12 @@ instance Vector3 Vec3 where
 newtype Color = Color (Double, Double, Double)
   deriving (Num, Vector3) via Vec3
 
-class ColorRGB c where
-  rVal :: c -> Double
-  gVal :: c -> Double
-  bVal :: c -> Double
-  pixel :: c -> ImagePixel
-
-instance ColorRGB Color where
-  rVal = xVal
-  gVal = yVal
-  bVal = zVal
-  pixel (Color (r, g, b)) =
-    let !rByte = double2Int (255.999 * r)
-        !gByte = double2Int (255.999 * g)
-        !bByte = double2Int (255.999 * b)
-    in ImagePixel (rByte, gByte, bByte)
+pixel :: Color -> ImagePixel
+pixel (Color (r, g, b)) =
+  let !rByte = double2Int (255.999 * r)
+      !gByte = double2Int (255.999 * g)
+      !bByte = double2Int (255.999 * b)
+  in ImagePixel (rByte, gByte, bByte)
 
 newtype Point3 = Point3 (Double, Double, Double)
   deriving (Num, Vector3) via Vec3
@@ -131,24 +120,28 @@ rayColor ray =
       a = 0.5 * (yVal unitDirection + 1.0)
       center = Point3 (0.0, 0.0, -1.0)
       radius = 0.5
-      isHittingSphere = hitSphere center radius ray
-  in if isHittingSphere then
-       Color (1.0, 0.0, 0.0)
+      t = hitSphere center radius ray
+      n = unitVector $ ray `at` t - Point3 (0.0, 0.0, -1.0)
+  in if t > 0.0 then
+       Color (xVal n + 1, yVal n + 1, zVal n + 1) `scale` 0.5
      else
        Color (1.0, 1.0, 1.0) `scale` (1.0 - a) + Color (0.5, 0.7, 1.0) `scale` a
 
-hitSphere :: Point3 -> Double -> Ray -> Bool
+hitSphere :: Point3 -> Double -> Ray -> Double
 hitSphere center radius ray =
   let oc = center - ray.origin
       a = ray.direction `dot` ray.direction
       b = (-2.0) * ray.direction `dot` coerce oc
       c = oc `dot` oc - radius * radius
       discriminant = b * b - 4 * a * c
-  in discriminant >= 0.0
+  in if discriminant < 0.0 then
+       -1.0
+     else
+       (-b - sqrt discriminant) / (2.0 * a)
 
 type App =
   Eff
-    '[ Image
+    '[ ImageHandle
      , Logger
      , E.FileSystem
      , E.Error ImageHandleErr
@@ -219,18 +212,20 @@ main = do
     Left (ImageHandleErr err) -> putTextLn $ "Error: " <> err
     Right _ -> pass
 
-createImage :: (Image :> es, Logger :> es) => Eff es ()
+createImage :: (ImageHandle :> es, Logger :> es) => Eff es ()
 createImage =
   E.bracket_ (openImage "image.ppm") closeImage
     $ initImage imageWidth imageHeight >> printImagePixels
 
-printImagePixels :: (Image :> es, Logger :> es) => Eff es ()
+printImagePixels :: (ImageHandle :> es, Logger :> es) => Eff es ()
 printImagePixels = withLog $ do
   j <- ListT.fromFoldable [0 .. coerce imageHeight - 1]
   lift . log $ "\rScanlines remaining: " <> show (coerce imageHeight - j) <> " "
   i <- ListT.fromFoldable [0 .. coerce imageWidth - 1]
   let pixelCenter =
-        pixel00Loc + coerce (pixelDeltaU `scale` int2Double i) + coerce (pixelDeltaV `scale` int2Double j)
+        pixel00Loc
+          + coerce (pixelDeltaU `scale` int2Double i)
+          + coerce (pixelDeltaV `scale` int2Double j)
       rayDirection = coerce $ pixelCenter - cameraCenter
       ray = Ray cameraCenter rayDirection
       pixelColor = rayColor ray
