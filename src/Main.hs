@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
+
 module Main (main) where
 
 import Data.Text.IO qualified as T
@@ -114,11 +116,11 @@ data Ray = Ray {origin :: Point3, direction :: Vec3}
 at :: Ray -> Double -> Point3
 at ray t = ray.origin + coerce (ray.direction `scale` t)
 
-rayColor :: Ray -> [Shape AnyShapeTag] -> Color
+rayColor :: Ray -> [Shape AnyShape] -> Color
 rayColor ray world' =
   let unitDirection = unitVector ray.direction
       a = 0.5 * (yVal unitDirection + 1.0)
-  in case hit ray (0.0, 1.0 / 0.0) world' of
+  in case hit ray (Interval{minInterval = 0.0, maxInterval = 1.0 / 0.0}) world' of
        Just rec -> (coerce rec.normal + Color (1.0, 1.0, 1.0)) `scale` 0.5
        Nothing -> Color (1.0, 1.0, 1.0) `scale` (1.0 - a) + Color (0.5, 0.7, 1.0) `scale` a
 
@@ -129,18 +131,18 @@ data HitRecord = HitRecord
   , frontFace :: Bool
   }
 
-data SphereTag
-data AnyShapeTag
+data Sphere
+data AnyShape
 
 data Shape s where
-  Sphere :: {center :: Point3, radius :: Double} -> Shape SphereTag
-  AnyShape :: Hittable (Shape s) => Shape s -> Shape AnyShapeTag
+  Sphere :: {center :: Point3, radius :: Double} -> Shape Sphere
+  AnyShape :: Hittable (Shape s) => Shape s -> Shape AnyShape
 
 class Hittable h where
-  hit :: Ray -> (Double, Double) -> h -> Maybe HitRecord
+  hit :: Ray -> Interval -> h -> Maybe HitRecord
 
-instance Hittable (Shape SphereTag) where
-  hit ray (rayTMin, rayTMax) sphere =
+instance Hittable (Shape Sphere) where
+  hit ray rayT sphere =
     let oc = sphere.center - ray.origin
         a = lengthSquared ray.direction
         h = ray.direction `dot` coerce oc
@@ -149,7 +151,7 @@ instance Hittable (Shape SphereTag) where
         sqrtd = sqrt discriminant
         root_lo = (h - sqrtd) / a
         root_hi = (h + sqrtd) / a
-        root = if root_lo <= rayTMin || rayTMax <= root_lo then root_hi else root_lo
+        root = if not (rayT `surrounds` root_lo) then root_hi else root_lo
         t = root
         p = ray `at` t
         outwardNormal = coerce (p - sphere.center) `scale` (1 / sphere.radius)
@@ -157,18 +159,37 @@ instance Hittable (Shape SphereTag) where
           if ray.direction `dot` outwardNormal > 0.0 then (-outwardNormal, False) else (outwardNormal, True)
     in if
          | discriminant < 0.0 -> Nothing
-         | (root <= rayTMin || rayTMax <= root) -> Nothing
+         | not (rayT `surrounds` root) -> Nothing
          | otherwise -> Just $ HitRecord{..}
 
-instance Hittable (Shape AnyShapeTag) where
-  hit ray tInterval (AnyShape shape) = hit ray tInterval shape
+instance Hittable (Shape AnyShape) where
+  hit ray rayT (AnyShape shape) = hit ray rayT shape
 
 instance Hittable a => Hittable [a] where
   hit _ _ [] = Nothing
-  hit ray (rayTMin, rayTMax) (h : hs) =
-    case hit ray (rayTMin, rayTMax) h of
-      Nothing -> hit ray (rayTMin, rayTMax) hs
-      Just !closestSoFar -> hit ray (rayTMin, closestSoFar.t) hs <|> Just closestSoFar
+  hit ray rayT (h : hs) =
+    case hit ray rayT h of
+      Nothing -> hit ray rayT hs
+      Just !closestSoFar ->
+        hit ray (Interval{minInterval = rayT.minInterval, maxInterval = closestSoFar.t}) hs
+          <|> Just closestSoFar
+
+data Interval = Interval {minInterval :: Double, maxInterval :: Double}
+
+size :: Interval -> Double
+size Interval{minInterval, maxInterval} = maxInterval - minInterval
+
+contains :: Interval -> Double -> Bool
+contains Interval{minInterval, maxInterval} x = minInterval <= x && x <= maxInterval
+
+surrounds :: Interval -> Double -> Bool
+surrounds Interval{minInterval, maxInterval} x = minInterval < x && x < maxInterval
+
+emptyInterval :: Interval
+emptyInterval = Interval{minInterval = 1.0 / 0.0, maxInterval = (-1.0) / 0.0}
+
+universeInterval :: Interval
+universeInterval = Interval{minInterval = (-1.0) / 0.0, maxInterval = 1.0 / 0.0}
 
 type App =
   Eff
@@ -236,7 +257,7 @@ viewportUpperLeft =
 pixel00Loc :: Point3
 pixel00Loc = viewportUpperLeft + coerce (pixelDeltaU + pixelDeltaV) `scale` 0.5
 
-world :: [Shape AnyShapeTag]
+world :: [Shape AnyShape]
 world =
   [ AnyShape $ Sphere (Point3 (0, 0, -1)) 0.5
   , AnyShape $ Sphere (Point3 (0, -100.5, -1)) 100
